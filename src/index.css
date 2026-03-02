@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* ── shout dark theme (always dark, no light variant) ── */
+  :root {
+    --background: 240 10% 4%;         /* #0b0b0e */
+    --foreground: 0 0% 83%;           /* #d4d4d4 */
+
+    --card: 240 6% 10%;               /* #181819 */
+    --card-foreground: 0 0% 83%;
+
+    --popover: 240 5% 12%;            /* #1d1d1f */
+    --popover-foreground: 0 0% 83%;
+
+    --primary: 354 100% 64%;          /* #ff4757 */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 240 4% 16%;          /* #272729 */
+    --secondary-foreground: 0 0% 83%;
+
+    --muted: 240 4% 16%;
+    --muted-foreground: 0 0% 53%;     /* #888888 */
+
+    --accent: 240 4% 20%;             /* #313135 */
+    --accent-foreground: 0 0% 83%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 240 4% 18%;             /* #2d2d30 */
+    --input: 240 4% 13%;              /* #1f1f21 */
+    --ring: 354 100% 64%;
+
+    --radius: 0.45rem;
+  }
+
+  * {
+    box-sizing: border-box;
+    border-color: hsl(var(--border));
+  }
+
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Thin scrollbars */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.5); }
+
+  /* Focus ring uses primary colour */
+  :focus-visible {
+    outline: 1.5px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  [data-tauri-drag-region] {
+    -webkit-app-region: drag;
+    app-region: drag; /* stylelint-disable-line */
+  }
+}
+
+@layer utilities {
+  .font-mono {
+    font-family: Consolas, monospace;
+  }
+}
