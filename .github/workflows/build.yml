@@ -9,28 +9,7 @@ on:
     branches: [master]
 
 jobs:
-  # Create a draft release upfront so each build job can upload directly to it.
-  # Skipped on non-tag pushes — build jobs handle the releaseId being empty.
-  create-release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    outputs:
-      release_id: ${{ steps.create.outputs.id }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Create draft release
-        id: create
-        uses: softprops/action-gh-release@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          draft: true
-          generate_release_notes: true
-
   build:
-    needs: [create-release]
-    if: always()
     strategy:
       fail-fast: false
       matrix:
@@ -87,29 +66,26 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Tauri app
+      # On regular pushes/PRs: just build, no release
+      - name: Build
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: tauri-apps/tauri-action@v0
+        with:
+          args: --target ${{ matrix.target }}
+
+      # On version tags: build and publish to a GitHub Release
+      # tauri-action creates the release on the first job to finish;
+      # subsequent parallel jobs just upload to it. Each platform
+      # produces a unique filename so there are no conflicts.
+      - name: Build and release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --target ${{ matrix.target }}
-          releaseId: ${{ needs.create-release.outputs.release_id }}
-
-  # Once all builds succeed, publish the draft release.
-  publish-release:
-    needs: [create-release, build]
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    steps:
-      - name: Publish release
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: ${{ needs.create-release.outputs.release_id }},
-              draft: false,
-            });
+          tagName: ${{ github.ref_name }}
+          releaseName: shout ${{ github.ref_name }}
+          releaseDraft: false
+          prerelease: false
+          generateReleaseNotes: true
