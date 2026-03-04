@@ -18,6 +18,7 @@ import { makeRequest } from '../utils/http'
 
 interface AppState {
   collections: Collection[]
+  savedRequests: SavedRequest[]   // requests not in any collection
   tabs: RequestTab[]
   activeTabId: string | null
 
@@ -27,6 +28,12 @@ interface AppState {
   deleteCollection: (id: string) => void
   addSavedRequest: (collectionId: string, request: Omit<SavedRequest, 'id' | 'createdAt' | 'updatedAt'>) => void
   deleteSavedRequest: (collectionId: string, requestId: string) => void
+
+  // Root-level saved requests (not in any collection)
+  saveTabToRoot: (tabId: string, name: string) => SavedRequest
+  deleteRootRequest: (id: string) => void
+  moveRequestsToRoot: (collectionId: string, requestIds: string[]) => void
+  moveSavedRequestsToCollection: (requestIds: string[], collectionId: string, groupId: string | null) => void
 
   // Group actions
   addGroup: (collectionId: string, name: string) => CollectionGroup
@@ -108,6 +115,7 @@ export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
       collections: [],
+      savedRequests: [],
       tabs: [],
       activeTabId: null,
 
@@ -169,6 +177,80 @@ export const useStore = create<AppState>()(
               })),
               updatedAt: Date.now(),
             }
+          }),
+        }))
+      },
+
+      saveTabToRoot: (tabId, name) => {
+        const state = get()
+        const tab = state.tabs.find((t) => t.id === tabId)
+        const saved: SavedRequest = {
+          id: tab?.savedRequestId ?? crypto.randomUUID(),
+          name,
+          collectionId: '',
+          method: tab?.method ?? 'GET',
+          url: tab?.url ?? '',
+          headers: tab?.headers ?? [],
+          params: tab?.params ?? [],
+          body: tab?.body ?? { type: 'none', content: '' },
+          auth: tab?.auth ?? { type: 'none' },
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }
+        set((s) => ({
+          savedRequests: s.savedRequests.some((r) => r.id === saved.id)
+            ? s.savedRequests.map((r) => (r.id === saved.id ? saved : r))
+            : [...s.savedRequests, saved],
+          tabs: s.tabs.map((t) =>
+            t.id === tabId ? { ...t, name, savedRequestId: saved.id, collectionId: '', isDirty: false } : t
+          ),
+        }))
+        return saved
+      },
+
+      deleteRootRequest: (id) => {
+        set((s) => ({ savedRequests: s.savedRequests.filter((r) => r.id !== id) }))
+      },
+
+      moveRequestsToRoot: (collectionId, requestIds) => {
+        const state = get()
+        const col = state.collections.find((c) => c.id === collectionId)
+        if (!col) return
+        const moved: SavedRequest[] = []
+        let updatedCol = col
+        for (const reqId of requestIds) {
+          const { request, rootRequests, groups } = extractRequest(updatedCol, reqId)
+          if (request) {
+            moved.push({ ...request, collectionId: '' })
+            updatedCol = { ...updatedCol, requests: rootRequests, groups, updatedAt: Date.now() }
+          }
+        }
+        if (moved.length === 0) return
+        set((s) => ({
+          collections: s.collections.map((c) => (c.id === collectionId ? updatedCol : c)),
+          savedRequests: [...s.savedRequests, ...moved],
+        }))
+      },
+
+      moveSavedRequestsToCollection: (requestIds, collectionId, groupId) => {
+        const state = get()
+        const toMove = state.savedRequests.filter((r) => requestIds.includes(r.id))
+        if (toMove.length === 0) return
+        const updated = toMove.map((r) => ({ ...r, collectionId }))
+        set((s) => ({
+          savedRequests: s.savedRequests.filter((r) => !requestIds.includes(r.id)),
+          collections: s.collections.map((c) => {
+            if (c.id !== collectionId) return c
+            if (groupId) {
+              return {
+                ...c,
+                groups: (c.groups ?? []).map((g) =>
+                  g.id === groupId ? { ...g, requests: [...g.requests, ...updated] } : g
+                ),
+                updatedAt: Date.now(),
+              }
+            }
+            return { ...c, requests: [...c.requests, ...updated], updatedAt: Date.now() }
           }),
         }))
       },

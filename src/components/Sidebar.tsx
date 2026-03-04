@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo, useDeferredValue } from 'react'
 import { useStore } from '../store/useStore'
 import type { Collection, CollectionGroup, SavedRequest } from '../types'
 import { METHOD_COLORS } from '../types'
@@ -6,12 +6,13 @@ import { ImportModal } from './ImportModal'
 import { EnvironmentModal } from './EnvironmentModal'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { ScrollArea } from './ui/scroll-area'
 import { Separator } from './ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 import {
   Plus, Upload, ChevronRight, Trash2, FolderOpen, Check,
-  Folder, FolderPlus, Pencil, MoreHorizontal, X, FlaskConical,
+  Folder, FolderPlus, Pencil, MoreHorizontal, X, FlaskConical, Search,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -33,6 +34,17 @@ interface DragState {
 const ATTR_KEY = 'data-drop-key'   // "group:<id>" | "root:<colId>"
 const ATTR_COL = 'data-drop-col'   // collection id
 
+// ── Fuzzy match ───────────────────────────────────────────────────────────────
+
+function fuzzy(query: string, target: string): boolean {
+  const t = target.toLowerCase()
+  let qi = 0
+  for (let i = 0; i < t.length && qi < query.length; i++) {
+    if (t[i] === query[qi]) qi++
+  }
+  return qi === query.length
+}
+
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -40,11 +52,13 @@ interface Props {
 }
 
 export function Sidebar({ onNavigate }: Props) {
-  const { collections, tabs, activeTabId, openTab, addCollection, moveRequestsToGroup } = useStore()
+  const { collections, savedRequests, tabs, activeTabId, openTab, addCollection, moveRequestsToGroup, moveRequestsToRoot, moveSavedRequestsToCollection, deleteRootRequest, openSavedRequest } = useStore()
   const [showImport, setShowImport] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [newColName, setNewColName] = useState('')
   const [addingCol, setAddingCol] = useState(false)
+  const [search, setSearch] = useState('')
+  const [sort, setSort] = useState<'newest' | 'oldest' | 'az' | 'za'>('newest')
 
   // Selection state — scoped to one collection at a time
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -60,6 +74,10 @@ export function Sidebar({ onNavigate }: Props) {
   // Stable refs so the global mousemove/mouseup effect never goes stale
   const moveRequestsToGroupRef = useRef(moveRequestsToGroup)
   moveRequestsToGroupRef.current = moveRequestsToGroup
+  const moveRequestsToRootRef = useRef(moveRequestsToRoot)
+  moveRequestsToRootRef.current = moveRequestsToRoot
+  const moveSavedRequestsToCollectionRef = useRef(moveSavedRequestsToCollection)
+  moveSavedRequestsToCollectionRef.current = moveSavedRequestsToCollection
 
   const clearSelectionRef = useRef<() => void>(() => {})
 
@@ -160,8 +178,28 @@ export function Sidebar({ onNavigate }: Props) {
 
       const dropKey = target.getAttribute(ATTR_KEY)
       const dropColId = target.getAttribute(ATTR_COL)
-      if (!dropKey || !dropColId || dropColId !== state.payload.collectionId) return
+      if (!dropKey) return
 
+      // Drop onto the sidebar-level "Saved" zone — move out of collection entirely
+      if (dropKey === '__sidebar_root__') {
+        if (state.payload.collectionId) {
+          moveRequestsToRootRef.current(state.payload.collectionId, state.payload.requestIds)
+          clearSelectionRef.current()
+        }
+        return
+      }
+
+      if (!dropColId) return
+
+      // Dragging from "Saved" (no collection) into a collection group or root
+      if (!state.payload.collectionId) {
+        const targetGroupId = dropKey.startsWith('root:') ? null : dropKey.startsWith('group:') ? dropKey.replace('group:', '') : null
+        moveSavedRequestsToCollectionRef.current(state.payload.requestIds, dropColId, targetGroupId)
+        clearSelectionRef.current()
+        return
+      }
+
+      if (dropColId !== state.payload.collectionId) return
       const targetGroupId = dropKey.startsWith('root:') ? null : dropKey.replace('group:', '')
       moveRequestsToGroupRef.current(dropColId, state.payload.requestIds, targetGroupId)
       clearSelectionRef.current()
@@ -176,6 +214,41 @@ export function Sidebar({ onNavigate }: Props) {
   }, []) // intentionally empty — uses refs for callbacks
 
   const isDragging = draggingIds.size > 0
+
+  const deferredSearch = useDeferredValue(search)
+  const q = deferredSearch.trim().toLowerCase()
+  const filterActive = q.length > 0
+
+
+  const filteredData = useMemo(() => collections
+    .map((col) => {
+      if (!filterActive) {
+        return {
+          collection: col,
+          rootRequests: col.requests,
+          groups: (col.groups ?? []).map((g) => ({ group: g, requests: g.requests })),
+        }
+      }
+      const rootRequests = col.requests.filter((r) => fuzzy(q, r.name) || fuzzy(q, r.url))
+      const groups = (col.groups ?? [])
+        .map((g) => ({
+          group: g,
+          requests: g.requests.filter((r) => fuzzy(q, r.name) || fuzzy(q, r.url)),
+        }))
+        .filter(({ requests }) => requests.length > 0)
+      return { collection: col, rootRequests, groups }
+    })
+    .filter(({ rootRequests, groups }) =>
+      !filterActive || rootRequests.length > 0 || groups.length > 0
+    )
+    .sort((a, b) => {
+      const ca = a.collection, cb = b.collection
+      if (sort === 'newest') return cb.createdAt - ca.createdAt
+      if (sort === 'oldest') return ca.createdAt - cb.createdAt
+      if (sort === 'az') return ca.name.localeCompare(cb.name)
+      if (sort === 'za') return cb.name.localeCompare(ca.name)
+      return 0
+    }), [collections, q, sort, filterActive])
 
   return (
     <div className="flex flex-col w-full h-full bg-card">
@@ -200,6 +273,38 @@ export function Sidebar({ onNavigate }: Props) {
             <TooltipContent>Import OpenAPI</TooltipContent>
           </Tooltip>
         </div>
+      </div>
+
+      {/* Search + sort bar */}
+      <div className="px-2 py-1.5 border-b border-border shrink-0 flex gap-1">
+        <div className="relative flex-1">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground/50 pointer-events-none" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search…"
+            className="h-7 pl-6 text-xs"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-foreground"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+        <Select value={sort} onValueChange={(v) => setSort(v as typeof sort)}>
+          <SelectTrigger className="h-7 w-24 text-xs shrink-0">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="newest" className="text-xs">Newest</SelectItem>
+            <SelectItem value="oldest" className="text-xs">Oldest</SelectItem>
+            <SelectItem value="az" className="text-xs">A–Z</SelectItem>
+            <SelectItem value="za" className="text-xs">Z–A</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       {/* Body */}
@@ -248,8 +353,11 @@ export function Sidebar({ onNavigate }: Props) {
               </button>
             </div>
           )}
+          {collections.length > 0 && filteredData.length === 0 && (
+            <p className="text-center text-muted-foreground/50 text-xs py-6">No matches</p>
+          )}
 
-          {collections.map((col) => (
+          {filteredData.map(({ collection: col, rootRequests, groups }) => (
             <CollectionItem
               key={col.id}
               collection={col}
@@ -263,9 +371,60 @@ export function Sidebar({ onNavigate }: Props) {
               hoveredDropKey={hoveredDropKey}
               onSelectRequest={(reqId) => handleSelectRequest(col.id, reqId)}
               onDragInit={(reqId, x, y) => handleDragInit(col.id, reqId, x, y)}
+              filterActive={filterActive}
+              filteredRootRequests={rootRequests}
+              filteredGroups={groups}
             />
           ))}
+
+          {/* Sidebar-root drop zone: visible while dragging FROM a collection */}
+          {isDragging && dragState.current?.payload.collectionId && (
+            <div
+              {...{ [ATTR_KEY]: '__sidebar_root__', [ATTR_COL]: '' }}
+              className={cn(
+                'mt-1 h-7 rounded border border-dashed text-[10px] flex items-center justify-center transition-colors',
+                hoveredDropKey === '__sidebar_root__'
+                  ? 'border-primary/50 bg-primary/10 text-primary/70'
+                  : 'border-border/40 text-muted-foreground/30'
+              )}
+            >
+              Drop to remove from collection
+            </div>
+          )}
         </div>
+
+        {/* Saved requests (no collection) */}
+        {(() => {
+          const filteredSaved = filterActive
+            ? savedRequests.filter((r) => fuzzy(q, r.name) || fuzzy(q, r.url))
+            : savedRequests
+          if (filteredSaved.length === 0) return null
+          return (
+          <>
+            <Separator className="mx-2 my-1 w-auto" />
+            <div className="px-2 pb-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 px-1 block mb-1">
+                Saved
+              </span>
+              {filteredSaved.map((req) => (
+                <RequestRow
+                  key={req.id}
+                  request={req}
+                  currentGroupId={null}
+                  onNavigate={() => { openSavedRequest(req); onNavigate() }}
+                  onDelete={() => deleteRootRequest(req.id)}
+                  allGroups={[]}
+                  onMoveToGroup={() => {}}
+                  isSelected={false}
+                  isDragging={false}
+                  onSelect={() => {}}
+                  onDragInit={(x, y) => handleDragInit('', req.id, x, y)}
+                />
+              ))}
+            </div>
+          </>
+          )
+        })()}
 
         {/* Open tabs */}
         {tabs.length > 0 && (
@@ -339,11 +498,19 @@ interface CollectionItemProps {
   hoveredDropKey: string | null
   onSelectRequest: (reqId: string) => void
   onDragInit: (reqId: string, x: number, y: number) => void
+  filterActive: boolean
+  filteredRootRequests: SavedRequest[]
+  filteredGroups: { group: CollectionGroup; requests: SavedRequest[] }[]
 }
 
 function CollectionItem(props: CollectionItemProps) {
   const { collection, expanded, onToggle, expandedIds, onToggleId, onNavigate,
-          selectedIds, draggingIds, hoveredDropKey, onSelectRequest, onDragInit } = props
+          selectedIds, draggingIds, hoveredDropKey, onSelectRequest, onDragInit,
+          filterActive, filteredRootRequests, filteredGroups } = props
+
+  const effectiveExpanded = filterActive ? true : expanded
+  const effectiveRootRequests = filterActive ? filteredRootRequests : collection.requests
+  const effectiveGroups = filterActive ? filteredGroups : (collection.groups ?? []).map((g) => ({ group: g, requests: g.requests }))
   const { openSavedRequest, deleteCollection, deleteSavedRequest, addGroup, deleteGroup, renameGroup, moveRequestToGroup } = useStore()
   const [addingGroup, setAddingGroup] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
@@ -379,7 +546,7 @@ function CollectionItem(props: CollectionItemProps) {
         onClick={onToggle}
       >
         <ChevronRight
-          className={cn('h-3.5 w-3.5 text-muted-foreground/50 shrink-0 transition-transform duration-150', expanded && 'rotate-90')}
+          className={cn('h-3.5 w-3.5 text-muted-foreground/50 shrink-0 transition-transform duration-150', effectiveExpanded && 'rotate-90')}
         />
         <span className="text-xs font-medium text-foreground flex-1 truncate">{collection.name}</span>
         <span className="text-[10px] text-muted-foreground/40 mr-0.5">{totalCount}</span>
@@ -427,10 +594,10 @@ function CollectionItem(props: CollectionItemProps) {
       )}
 
       {/* Expanded content */}
-      {expanded && (
+      {effectiveExpanded && (
         <div className="ml-3.5 border-l border-border pl-2 my-0.5">
           {/* Inline add-group input */}
-          {addingGroup && (
+          {!filterActive && addingGroup && (
             <div className="flex gap-1 mb-1 pr-1">
               <Input
                 autoFocus
@@ -453,7 +620,7 @@ function CollectionItem(props: CollectionItemProps) {
           )}
 
           {/* Groups */}
-          {groups.map((group) => (
+          {effectiveGroups.map(({ group, requests: filteredReqs }) => (
             <GroupFolder
               key={group.id}
               group={group}
@@ -469,18 +636,20 @@ function CollectionItem(props: CollectionItemProps) {
               onDeleteGroup={() => deleteGroup(collection.id, group.id)}
               onOpenRequest={(r) => { openSavedRequest(r); onNavigate() }}
               onDeleteRequest={(rid) => deleteSavedRequest(collection.id, rid)}
-              allGroups={groups}
+              allGroups={collection.groups ?? []}
               onMoveRequest={(rid, gid) => moveRequestToGroup(collection.id, rid, gid)}
               selectedIds={selectedIds}
               draggingIds={draggingIds}
               isDragOver={hoveredDropKey === `group:${group.id}`}
               onSelectRequest={onSelectRequest}
               onDragInit={onDragInit}
+              filterActive={filterActive}
+              filteredRequests={filterActive ? filteredReqs : undefined}
             />
           ))}
 
           {/* Root-level requests */}
-          {collection.requests.map((req) => (
+          {effectiveRootRequests.map((req) => (
             <RequestRow
               key={req.id}
               request={req}
@@ -544,6 +713,8 @@ interface GroupFolderProps {
   isDragOver: boolean
   onSelectRequest: (reqId: string) => void
   onDragInit: (reqId: string, x: number, y: number) => void
+  filterActive: boolean
+  filteredRequests?: SavedRequest[]
 }
 
 function GroupFolder(props: GroupFolderProps) {
@@ -552,7 +723,11 @@ function GroupFolder(props: GroupFolderProps) {
     renamingGroupId, renamingGroupName, onStartRename, onRenameChange, onRenameCommit, onRenameCancel,
     onDeleteGroup, onOpenRequest, onDeleteRequest, allGroups, onMoveRequest,
     selectedIds, draggingIds, isDragOver, onSelectRequest, onDragInit,
+    filterActive, filteredRequests,
   } = props
+
+  const effectiveExpanded = filterActive ? true : expanded
+  const effectiveRequests = filteredRequests ?? group.requests
 
   const isRenaming = renamingGroupId === group.id
   const groupDropKey = `group:${group.id}`
@@ -569,9 +744,9 @@ function GroupFolder(props: GroupFolderProps) {
         onClick={!isRenaming ? onToggle : undefined}
       >
         <ChevronRight
-          className={cn('h-3 w-3 text-muted-foreground/50 shrink-0 transition-transform duration-150', expanded && 'rotate-90')}
+          className={cn('h-3 w-3 text-muted-foreground/50 shrink-0 transition-transform duration-150', effectiveExpanded && 'rotate-90')}
         />
-        {expanded
+        {effectiveExpanded
           ? <FolderOpen className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
           : <Folder className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
         }
@@ -612,12 +787,12 @@ function GroupFolder(props: GroupFolderProps) {
       </div>
 
       {/* Requests inside this group */}
-      {expanded && (
+      {effectiveExpanded && (
         <div className="ml-3.5 border-l border-border pl-2">
-          {group.requests.length === 0 && (
+          {effectiveRequests.length === 0 && (
             <p className="text-muted-foreground/30 text-xs px-1 py-0.5 italic">Empty group</p>
           )}
-          {group.requests.map((req) => (
+          {effectiveRequests.map((req) => (
             <RequestRow
               key={req.id}
               request={req}
@@ -694,9 +869,9 @@ function RequestRow({
     >
       <span
         className="text-[10px] font-bold w-10 text-right shrink-0"
-        style={{ color: METHOD_COLORS[request.method] }}
+        style={{ color: request.body.type === 'graphql' ? '#e040fb' : METHOD_COLORS[request.method] }}
       >
-        {request.method}
+        {request.body.type === 'graphql' ? 'GQL' : request.method}
       </span>
       <span className="text-xs text-foreground/80 truncate flex-1">{request.name}</span>
 

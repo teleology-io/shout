@@ -14,6 +14,18 @@ export function JsonEditor({ value, onChange, placeholder = PLACEHOLDER }: Props
   const taRef = useRef<HTMLTextAreaElement>(null)
   const preRef = useRef<HTMLPreElement>(null)
 
+  const handleTab = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== 'Tab') return
+    e.preventDefault()
+    const ta = e.currentTarget
+    const start = ta.selectionStart
+    const end = ta.selectionEnd
+    const next = ta.value.substring(0, start) + '  ' + ta.value.substring(end)
+    onChange(next)
+    // restore cursor after React re-render
+    requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + 2 })
+  }, [onChange])
+
   const syncScroll = useCallback(() => {
     if (taRef.current && preRef.current) {
       preRef.current.scrollTop = taRef.current.scrollTop
@@ -65,6 +77,7 @@ export function JsonEditor({ value, onChange, placeholder = PLACEHOLDER }: Props
           ref={taRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onKeyDown={handleTab}
           onScroll={syncScroll}
           spellCheck={false}
           autoComplete="off"

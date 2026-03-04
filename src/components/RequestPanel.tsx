@@ -19,17 +19,29 @@ import { ScrollArea } from './ui/scroll-area'
 import { Loader2, Save, SendHorizonal, Plus, X, Code2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+function insertTab(e: React.KeyboardEvent<HTMLTextAreaElement>, onChange: (v: string) => void) {
+  if (e.key !== 'Tab') return
+  e.preventDefault()
+  const ta = e.currentTarget
+  const start = ta.selectionStart
+  const end = ta.selectionEnd
+  onChange(ta.value.substring(0, start) + '  ' + ta.value.substring(end))
+  requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + 2 })
+}
+
 const HTTP_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
+const GQL_COLOR = '#e040fb'
 
 interface Props {
   tab: RequestTab
 }
 
 export function RequestPanel({ tab }: Props) {
-  const { updateTab, sendRequest, saveTabToCollection, collections } = useStore()
+  const { updateTab, sendRequest, saveTabToCollection, saveTabToRoot, addCollection, collections } = useStore()
   const [showSave, setShowSave] = useState(false)
   const [saveName, setSaveName] = useState(tab.name)
-  const [saveColId, setSaveColId] = useState(collections[0]?.id ?? '')
+  const [saveColId, setSaveColId] = useState(collections[0]?.id ?? '__root__')
+  const [newColName, setNewColName] = useState('')
   const [showSnippet, setShowSnippet] = useState(false)
   const envVars = useCollectionEnvVars(tab.collectionId)
 
@@ -38,9 +50,19 @@ export function RequestPanel({ tab }: Props) {
   const handleSend = () => { if (tab.url.trim()) sendRequest(tab.id) }
 
   const handleSave = () => {
-    if (!saveColId) return
-    saveTabToCollection(tab.id, saveColId, saveName || tab.url || 'New Request')
+    const name = saveName || tab.url || 'New Request'
+    if (saveColId === '__root__') {
+      saveTabToRoot(tab.id, name)
+    } else if (saveColId === '__new__') {
+      if (!newColName.trim()) return
+      const col = addCollection(newColName.trim())
+      saveTabToCollection(tab.id, col.id, name)
+    } else {
+      if (!saveColId) return
+      saveTabToCollection(tab.id, saveColId, name)
+    }
     setShowSave(false)
+    setNewColName('')
   }
 
   const enabledParams = tab.params.filter((p) => p.enabled && p.key).length
@@ -50,22 +72,39 @@ export function RequestPanel({ tab }: Props) {
     <div className="flex flex-col h-full bg-background">
       {/* URL bar — stacks vertically on small screens */}
       <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 px-3 py-2.5 border-b border-border shrink-0">
-        {/* Method picker */}
-        <Select value={tab.method} onValueChange={(v) => update({ method: v as HttpMethod })}>
-          <SelectTrigger
-            className="w-[105px] shrink-0 font-bold text-xs"
-            style={{ color: METHOD_COLORS[tab.method] }}
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {HTTP_METHODS.map((m) => (
-              <SelectItem key={m} value={m} className="font-bold text-xs" style={{ color: METHOD_COLORS[m] }}>
-                {m}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {/* Method picker — "GQL" is a pseudo-method: sends as POST with graphql body */}
+        {(() => {
+          const isGql = tab.body.type === 'graphql'
+          const displayMethod = isGql ? 'GQL' : tab.method
+          const methodColor = isGql ? GQL_COLOR : METHOD_COLORS[tab.method]
+          const handleMethodChange = (v: string) => {
+            if (v === 'GQL') {
+              update({ method: 'POST', body: { type: 'graphql', content: tab.body.content, variables: tab.body.variables } })
+            } else {
+              update({
+                method: v as HttpMethod,
+                ...(isGql ? { body: { type: 'none' as const, content: '' } } : {}),
+              })
+            }
+          }
+          return (
+            <Select value={displayMethod} onValueChange={handleMethodChange}>
+              <SelectTrigger className="w-[105px] shrink-0 font-bold text-xs" style={{ color: methodColor }}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {HTTP_METHODS.map((m) => (
+                  <SelectItem key={m} value={m} className="font-bold text-xs" style={{ color: METHOD_COLORS[m] }}>
+                    {m}
+                  </SelectItem>
+                ))}
+                <SelectItem value="GQL" className="font-bold text-xs" style={{ color: GQL_COLOR }}>
+                  GQL
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          )
+        })()}
 
         {/* URL */}
         <Input
@@ -104,30 +143,50 @@ export function RequestPanel({ tab }: Props) {
 
             {showSave && (
               <div className="absolute right-0 top-full mt-1 z-20 w-72 rounded-lg border border-border bg-card shadow-xl p-3 space-y-2">
-                <p className="text-xs text-muted-foreground font-medium">Save to collection</p>
+                <p className="text-xs text-muted-foreground font-medium">Save request</p>
                 <Input
+                  autoFocus
                   value={saveName}
                   onChange={(e) => setSaveName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') setShowSave(false) }}
                   placeholder="Request name"
                   className="h-7 text-xs"
                 />
-                {collections.length > 0 ? (
-                  <Select value={saveColId} onValueChange={setSaveColId}>
-                    <SelectTrigger className="h-7 text-xs">
-                      <SelectValue placeholder="Select collection" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {collections.map((c) => (
-                        <SelectItem key={c.id} value={c.id} className="text-xs">{c.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <p className="text-muted-foreground/60 text-xs italic">Create a collection in the sidebar first</p>
+                <Select
+                  value={saveColId}
+                  onValueChange={(v) => { setSaveColId(v); if (v !== '__new__') setNewColName('') }}
+                >
+                  <SelectTrigger className="h-7 text-xs">
+                    <SelectValue placeholder="Select collection" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__root__" className="text-xs text-muted-foreground">No collection</SelectItem>
+                    {collections.map((c) => (
+                      <SelectItem key={c.id} value={c.id} className="text-xs">{c.name}</SelectItem>
+                    ))}
+                    <SelectItem value="__new__" className="text-xs text-primary">+ New collection</SelectItem>
+                  </SelectContent>
+                </Select>
+                {saveColId === '__new__' && (
+                  <Input
+                    autoFocus
+                    value={newColName}
+                    onChange={(e) => setNewColName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') setShowSave(false) }}
+                    placeholder="Collection name"
+                    className="h-7 text-xs"
+                  />
                 )}
                 <div className="flex justify-end gap-2 pt-1">
                   <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setShowSave(false)}>Cancel</Button>
-                  <Button size="sm" className="h-7 text-xs" disabled={!saveColId} onClick={handleSave}>Save</Button>
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs"
+                    disabled={saveColId === '__new__' && !newColName.trim()}
+                    onClick={handleSave}
+                  >
+                    Save
+                  </Button>
                 </div>
               </div>
             )}
@@ -166,7 +225,9 @@ export function RequestPanel({ tab }: Props) {
           <TabsTrigger value="headers" className="text-xs">
             Headers{enabledHeaders > 0 && <span className="ml-1 text-primary">({enabledHeaders})</span>}
           </TabsTrigger>
-          <TabsTrigger value="body" className="text-xs">Body</TabsTrigger>
+          <TabsTrigger value="body" className="text-xs">
+            {tab.body.type === 'graphql' ? 'GraphQL' : 'Body'}
+          </TabsTrigger>
           <TabsTrigger value="auth" className="text-xs">Auth</TabsTrigger>
         </TabsList>
 
@@ -194,29 +255,26 @@ const BODY_TYPE_LABELS: Record<string, string> = {
   json: 'JSON',
   text: 'Text',
   form: 'Form',
-  graphql: 'GraphQL',
 }
 
 function BodyEditor({ tab, update }: { tab: RequestTab; update: (c: Partial<RequestTab>) => void }) {
   const { body } = tab
 
-  const handleTypeChange = (v: string) => {
-    const type = v as typeof body.type
-    // GraphQL requests must be POST
-    const methodUpdate = type === 'graphql' ? { method: 'POST' as const } : {}
-    update({ body: { ...body, type }, ...methodUpdate })
+  // GraphQL mode is driven by the method selector — skip the picker and render the editor directly
+  if (body.type === 'graphql') {
+    return <GraphQLEditor body={body} onChange={(b) => update({ body: b })} tabId={tab.id} />
   }
 
   return (
     <div className="flex flex-col h-full">
-      {/* Type picker */}
+      {/* Type picker — graphql removed; it's set via the GQL pseudo-method */}
       <div className="px-3 py-2 border-b border-border shrink-0">
         <RadioGroup
           value={body.type}
-          onValueChange={handleTypeChange}
+          onValueChange={(v) => update({ body: { ...body, type: v as typeof body.type } })}
           className="flex flex-wrap gap-x-4 gap-y-1"
         >
-          {(['none', 'json', 'text', 'form', 'graphql'] as const).map((t) => (
+          {(['none', 'json', 'text', 'form'] as const).map((t) => (
             <div key={t} className="flex items-center gap-1.5">
               <RadioGroupItem value={t} id={`body-${tab.id}-${t}`} />
               <Label htmlFor={`body-${tab.id}-${t}`} className={cn('cursor-pointer', body.type === t && 'text-foreground')}>
@@ -244,6 +302,7 @@ function BodyEditor({ tab, update }: { tab: RequestTab; update: (c: Partial<Requ
           <Textarea
             value={body.content}
             onChange={(e) => update({ body: { ...body, content: e.target.value } })}
+            onKeyDown={(e) => insertTab(e, (v) => update({ body: { ...body, content: v } }))}
             placeholder="Plain text body…"
             spellCheck={false}
             className="w-full h-full resize-none rounded-none border-0 bg-transparent font-mono text-sm focus-visible:ring-0 focus-visible:ring-offset-0"
@@ -254,9 +313,6 @@ function BodyEditor({ tab, update }: { tab: RequestTab; update: (c: Partial<Requ
             fields={body.fields ?? []}
             onChange={(fields) => update({ body: { ...body, fields } })}
           />
-        )}
-        {body.type === 'graphql' && (
-          <GraphQLEditor body={body} onChange={(b) => update({ body: b })} tabId={tab.id} />
         )}
       </div>
     </div>
@@ -282,6 +338,7 @@ function GraphQLEditor({
         <Textarea
           value={body.content}
           onChange={(e) => onChange({ ...body, content: e.target.value })}
+          onKeyDown={(e) => insertTab(e, (v) => onChange({ ...body, content: v }))}
           placeholder={'query {\n  user(id: "1") {\n    id\n    name\n  }\n}'}
           spellCheck={false}
           className="flex-1 resize-none rounded-none border-0 bg-transparent font-mono text-sm focus-visible:ring-0 focus-visible:ring-offset-0"
@@ -299,6 +356,7 @@ function GraphQLEditor({
           key={`gql-vars-${tabId}`}
           value={body.variables ?? ''}
           onChange={(e) => onChange({ ...body, variables: e.target.value })}
+          onKeyDown={(e) => insertTab(e, (v) => onChange({ ...body, variables: v }))}
           placeholder={'{\n  "id": "1"\n}'}
           spellCheck={false}
           className="flex-1 resize-none rounded-none border-0 bg-transparent font-mono text-sm focus-visible:ring-0 focus-visible:ring-offset-0"

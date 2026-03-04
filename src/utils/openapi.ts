@@ -41,6 +41,8 @@ interface SchemaObject {
   example?: unknown
   properties?: Record<string, SchemaObject>
   items?: SchemaObject
+  $ref?: string
+  nullable?: boolean
 }
 
 const HTTP_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
@@ -93,9 +95,32 @@ function getDefaultForType(type?: string): string {
   }
 }
 
+// ── GraphQL detection ──────────────────────────────────────────────────────────
+// Per https://graphql.org/learn/serving-over-http/, a GraphQL server exposes a
+// SINGLE endpoint (e.g. /graphql). All operations POST { query, variables,
+// operationName }. Detection is based on the request body schema — NOT on URL
+// or path patterns.
+
+function isGraphQlRequestBody(rb: OperationObject['requestBody']): boolean {
+  if (!rb?.content) return false
+  // Explicit GraphQL content type
+  if (rb.content['application/graphql']) return true
+  // Standard JSON body whose schema has a `query` string property
+  const schema = rb.content['application/json']?.schema
+  if (schema?.properties && 'query' in schema.properties) return true
+  return false
+}
+
+// ── Request body builder ───────────────────────────────────────────────────────
+
 function buildRequestBody(operation: OperationObject): RequestBody {
   const rb = operation.requestBody
   if (!rb?.content) return { type: 'none', content: '' }
+
+  if (isGraphQlRequestBody(rb)) {
+    // Return an empty GraphQL body — the user writes their own query
+    return { type: 'graphql', content: '', variables: '' }
+  }
 
   if (rb.content['application/json']) {
     const schema = rb.content['application/json'].schema
