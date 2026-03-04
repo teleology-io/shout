@@ -1,6 +1,6 @@
 [package]
 name = "shout"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Postman-like API client"
 authors = []
 edition = "2021"
