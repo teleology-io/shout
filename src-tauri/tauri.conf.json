@@ -1,6 +1,6 @@
 {
   "productName": "shout",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.shout.client",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -35,5 +35,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM4RUMzOTBFNzkzOTRGMjgKUldRb1R6bDVEam5zT0dVcmQ4UDF2THh6cStNZTBnejlHLy9HT1VacEljYkxHVUY1M0tzWTNwTmQK",
+      "endpoints": [
+        "https://github.com/teleology-io/shout/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

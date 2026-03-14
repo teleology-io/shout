@@ -7,6 +7,7 @@ import { ResponsePanel } from './components/ResponsePanel'
 import { Sheet, SheetContent } from './components/ui/sheet'
 import { Button } from './components/ui/button'
 import { TooltipProvider } from './components/ui/tooltip'
+import { UpdateBanner } from './components/UpdateBanner'
 import { Plus } from 'lucide-react'
 
 export default function App() {
@@ -58,6 +59,7 @@ export default function App() {
 
         {/* Main area */}
         <div className="flex flex-col flex-1 min-w-0">
+          <UpdateBanner />
           <TabBar onMenuClick={() => setMobileSidebarOpen(true)} />
 
           {tabs.length === 0 || !activeTab ? (
