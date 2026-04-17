@@ -1,4 +1,5 @@
-import type { RequestTab, ResponseData, KeyValue, Auth } from '../types'
+import type { RequestTab, ResponseData, KeyValue, Auth, ProxyConfig } from '../types'
+import { signJwt } from './jwt'
 
 // Check if running inside Tauri
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -12,10 +13,10 @@ function buildUrl(url: string, params: KeyValue[]): string {
   return base.includes('?') && !base.endsWith('?') ? `${base}&${qs}` : `${base}${qs}`
 }
 
-function buildHeaders(headers: KeyValue[], auth: Auth, bodyType: string): Record<string, string> {
+function buildHeaders(headers: KeyValue[], auth: Auth, bodyType: string, jwtToken?: string): Record<string, string> {
   const result: Record<string, string> = {}
 
-  // Set content-type based on body type
+  // Set content-type based on body type (multipart omitted — boundary set by reqwest/fetch)
   if (bodyType === 'json' || bodyType === 'graphql') {
     result['Content-Type'] = 'application/json'
   } else if (bodyType === 'text') {
@@ -32,6 +33,10 @@ function buildHeaders(headers: KeyValue[], auth: Auth, bodyType: string): Record
     result['Authorization'] = `Basic ${encoded}`
   } else if (auth.type === 'apikey' && auth.key && (auth.addTo ?? 'header') === 'header') {
     result[auth.key] = auth.value ?? ''
+  } else if (auth.type === 'jwt' && jwtToken) {
+    result['Authorization'] = `Bearer ${jwtToken}`
+  } else if (auth.type === 'oauth2' && auth.oauth2?.accessToken) {
+    result['Authorization'] = `Bearer ${auth.oauth2.accessToken}`
   }
 
   // User-defined headers (override defaults)
@@ -86,13 +91,35 @@ function buildUrlWithAuth(url: string, params: KeyValue[], auth: Auth): string {
   return buildUrl(url, extraParams)
 }
 
-export async function makeRequest(tab: RequestTab): Promise<ResponseData> {
+export async function makeRequest(tab: RequestTab, proxy?: ProxyConfig): Promise<ResponseData> {
+  // Sign JWT if needed
+  let jwtToken: string | undefined
+  if (tab.auth.type === 'jwt' && tab.auth.jwt) {
+    jwtToken = await signJwt(tab.auth.jwt)
+  }
+
   const url = buildUrlWithAuth(tab.url, tab.params, tab.auth)
-  const headers = buildHeaders(tab.headers, tab.auth, tab.body.type)
+  const headers = buildHeaders(tab.headers, tab.auth, tab.body.type, jwtToken)
   const body = buildBody(tab)
 
+  // For AWS SigV4, pass config to Rust (Rust handles signing)
+  const awsSigV4 = tab.auth.type === 'awssigv4' ? tab.auth.awsSigV4 : undefined
+
+  if (tab.body.type === 'multipart') {
+    const fields = (tab.body.fields ?? [])
+      .filter((f) => f.enabled && f.key)
+      .map((f) => ({ name: f.key, value: f.value }))
+    if (isTauri) {
+      return makeTauriRequest(tab.method, url, headers, undefined, fields, proxy, awsSigV4)
+    }
+    // Browser fallback: use FormData
+    const fd = new FormData()
+    for (const f of fields) fd.append(f.name, f.value)
+    return makeFetchRequest(tab.method, url, headers, fd)
+  }
+
   if (isTauri) {
-    return makeTauriRequest(tab.method, url, headers, body)
+    return makeTauriRequest(tab.method, url, headers, body, undefined, proxy, awsSigV4)
   }
   return makeFetchRequest(tab.method, url, headers, body)
 }
@@ -101,7 +128,10 @@ async function makeTauriRequest(
   method: string,
   url: string,
   headers: Record<string, string>,
-  body: string | undefined
+  body: string | undefined,
+  multipartFields?: Array<{ name: string; value: string }>,
+  proxy?: ProxyConfig,
+  awsSigV4?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string; region: string; service: string }
 ): Promise<ResponseData> {
   const { invoke } = await import('@tauri-apps/api/core')
 
@@ -114,7 +144,15 @@ async function makeTauriRequest(
     size: number
     time: number
   }>('make_http_request', {
-    request: { method, url, headers, body: body ?? null },
+    request: {
+      method,
+      url,
+      headers,
+      body: body ?? null,
+      multipart_fields: multipartFields ?? null,
+      proxy: proxy ?? null,
+      aws_sig_v4: awsSigV4 ?? null,
+    },
   })
 
   return {
@@ -145,13 +183,18 @@ async function makeFetchRequest(
   method: string,
   url: string,
   headers: Record<string, string>,
-  body: string | undefined
+  body: string | FormData | undefined
 ): Promise<ResponseData> {
   const start = performance.now()
 
+  // Don't pass Content-Type when body is FormData — browser sets it with boundary
+  const fetchHeaders = body instanceof FormData
+    ? Object.fromEntries(Object.entries(headers).filter(([k]) => k.toLowerCase() !== 'content-type'))
+    : headers
+
   const response = await fetch(url, {
     method,
-    headers,
+    headers: fetchHeaders,
     body: method !== 'GET' && method !== 'HEAD' ? body : undefined,
   })
 
@@ -299,6 +342,246 @@ export function buildJavaScriptSnippet(tab: RequestTab): string {
   lines.push('console.log(data);')
 
   return lines.join('\n')
+}
+
+export function buildGoSnippet(tab: RequestTab): string {
+  const url = buildUrlWithAuth(tab.url, tab.params, tab.auth)
+  const headers = buildHeaders(tab.headers, tab.auth, tab.body.type)
+  const body = buildBody(tab)
+
+  const lines: string[] = [
+    'package main',
+    '',
+    'import (',
+    '\t"fmt"',
+    '\t"io"',
+    '\t"net/http"',
+    body !== undefined ? '\t"strings"' : '',
+    ')',
+    '',
+    'func main() {',
+  ].filter((l) => l !== '' || l === '')
+
+  if (body !== undefined) {
+    lines.push(`\tbody := strings.NewReader(${JSON.stringify(body)})`)
+    lines.push(`\treq, _ := http.NewRequest("${tab.method}", ${JSON.stringify(url)}, body)`)
+  } else {
+    lines.push(`\treq, _ := http.NewRequest("${tab.method}", ${JSON.stringify(url)}, nil)`)
+  }
+
+  for (const [k, v] of Object.entries(headers)) {
+    lines.push(`\treq.Header.Set(${JSON.stringify(k)}, ${JSON.stringify(v)})`)
+  }
+
+  lines.push('')
+  lines.push('\tclient := &http.Client{}')
+  lines.push('\tresp, err := client.Do(req)')
+  lines.push('\tif err != nil { panic(err) }')
+  lines.push('\tdefer resp.Body.Close()')
+  lines.push('\tbody2, _ := io.ReadAll(resp.Body)')
+  lines.push('\tfmt.Println(resp.Status)')
+  lines.push('\tfmt.Println(string(body2))')
+  lines.push('}')
+
+  return lines.join('\n')
+}
+
+export function buildRubySnippet(tab: RequestTab): string {
+  const url = buildUrlWithAuth(tab.url, tab.params, tab.auth)
+  const headers = buildHeaders(tab.headers, tab.auth, tab.body.type)
+  const body = buildBody(tab)
+
+  const lines: string[] = [
+    'require "net/http"',
+    'require "uri"',
+    '',
+    `uri = URI.parse(${JSON.stringify(url)})`,
+    `http = Net::HTTP.new(uri.host, uri.port)`,
+    'http.use_ssl = true if uri.scheme == "https"',
+    '',
+    `request = Net::HTTP::${tab.method.charAt(0) + tab.method.slice(1).toLowerCase()}.new(uri.request_uri)`,
+  ]
+
+  for (const [k, v] of Object.entries(headers)) {
+    lines.push(`request[${JSON.stringify(k)}] = ${JSON.stringify(v)}`)
+  }
+
+  if (body !== undefined) {
+    lines.push(`request.body = ${JSON.stringify(body)}`)
+  }
+
+  lines.push('')
+  lines.push('response = http.request(request)')
+  lines.push('puts response.code')
+  lines.push('puts response.body')
+
+  return lines.join('\n')
+}
+
+export function buildPhpSnippet(tab: RequestTab): string {
+  const url = buildUrlWithAuth(tab.url, tab.params, tab.auth)
+  const headers = buildHeaders(tab.headers, tab.auth, tab.body.type)
+  const body = buildBody(tab)
+
+  const headerLines = Object.entries(headers)
+    .map(([k, v]) => `  "${k}: ${v}",`)
+    .join('\n')
+
+  const lines: string[] = [
+    '<?php',
+    '',
+    '$curl = curl_init();',
+    '',
+    'curl_setopt_array($curl, [',
+    `  CURLOPT_URL => ${JSON.stringify(url)},`,
+    '  CURLOPT_RETURNTRANSFER => true,',
+    `  CURLOPT_CUSTOMREQUEST => "${tab.method}",`,
+  ]
+
+  if (headerLines) {
+    lines.push('  CURLOPT_HTTPHEADER => [')
+    lines.push(headerLines)
+    lines.push('  ],')
+  }
+
+  if (body !== undefined) {
+    lines.push(`  CURLOPT_POSTFIELDS => ${JSON.stringify(body)},`)
+  }
+
+  lines.push(']);')
+  lines.push('')
+  lines.push('$response = curl_exec($curl);')
+  lines.push('$statusCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);')
+  lines.push('curl_close($curl);')
+  lines.push('')
+  lines.push('echo $statusCode . "\\n";')
+  lines.push('echo $response . "\\n";')
+
+  return lines.join('\n')
+}
+
+export function buildRustSnippet(tab: RequestTab): string {
+  const url = buildUrlWithAuth(tab.url, tab.params, tab.auth)
+  const headers = buildHeaders(tab.headers, tab.auth, tab.body.type)
+  const body = buildBody(tab)
+
+  const lines: string[] = [
+    '// Add to Cargo.toml: reqwest = { version = "0.12", features = ["blocking", "json"] }',
+    '',
+    'use reqwest::blocking::Client;',
+    '',
+    'fn main() -> Result<(), Box<dyn std::error::Error>> {',
+    '    let client = Client::new();',
+    '',
+    `    let response = client`,
+    `        .${tab.method.toLowerCase()}(${JSON.stringify(url)})`,
+  ]
+
+  for (const [k, v] of Object.entries(headers)) {
+    lines.push(`        .header(${JSON.stringify(k)}, ${JSON.stringify(v)})`)
+  }
+
+  if (body !== undefined) {
+    lines.push(`        .body(${JSON.stringify(body)})`)
+  }
+
+  lines.push('        .send()?;')
+  lines.push('')
+  lines.push('    println!("Status: {}", response.status());')
+  lines.push('    println!("Body: {}", response.text()?);')
+  lines.push('    Ok(())')
+  lines.push('}')
+
+  return lines.join('\n')
+}
+
+export function buildJavaSnippet(tab: RequestTab): string {
+  const url = buildUrlWithAuth(tab.url, tab.params, tab.auth)
+  const headers = buildHeaders(tab.headers, tab.auth, tab.body.type)
+  const body = buildBody(tab)
+
+  const lines: string[] = [
+    '// Requires OkHttp: https://square.github.io/okhttp/',
+    'import okhttp3.*;',
+    '',
+    'OkHttpClient client = new OkHttpClient();',
+    '',
+  ]
+
+  if (body !== undefined) {
+    const ct = headers['Content-Type'] ?? 'text/plain'
+    lines.push(`MediaType mediaType = MediaType.parse(${JSON.stringify(ct)});`)
+    lines.push(`RequestBody body = RequestBody.create(${JSON.stringify(body)}, mediaType);`)
+    lines.push('')
+  }
+
+  lines.push('Request request = new Request.Builder()')
+  lines.push(`  .url(${JSON.stringify(url)})`)
+  lines.push(`  .method(${JSON.stringify(tab.method)}, ${body !== undefined ? 'body' : 'null'})`)
+
+  for (const [k, v] of Object.entries(headers)) {
+    lines.push(`  .addHeader(${JSON.stringify(k)}, ${JSON.stringify(v)})`)
+  }
+
+  lines.push('  .build();')
+  lines.push('')
+  lines.push('Response response = client.newCall(request).execute();')
+  lines.push('System.out.println(response.code());')
+  lines.push('System.out.println(response.body().string());')
+
+  return lines.join('\n')
+}
+
+export function buildCsharpSnippet(tab: RequestTab): string {
+  const url = buildUrlWithAuth(tab.url, tab.params, tab.auth)
+  const headers = buildHeaders(tab.headers, tab.auth, tab.body.type)
+  const body = buildBody(tab)
+
+  const lines: string[] = [
+    'using System.Net.Http;',
+    'using System.Text;',
+    '',
+    'var client = new HttpClient();',
+    `var request = new HttpRequestMessage(HttpMethod.${tab.method.charAt(0) + tab.method.slice(1).toLowerCase()}, ${JSON.stringify(url)});`,
+  ]
+
+  for (const [k, v] of Object.entries(headers).filter(([k]) => k.toLowerCase() !== 'content-type')) {
+    lines.push(`request.Headers.Add(${JSON.stringify(k)}, ${JSON.stringify(v)});`)
+  }
+
+  if (body !== undefined) {
+    const ct = headers['Content-Type'] ?? 'text/plain'
+    lines.push(`request.Content = new StringContent(${JSON.stringify(body)}, Encoding.UTF8, ${JSON.stringify(ct)});`)
+  }
+
+  lines.push('')
+  lines.push('var response = await client.SendAsync(request);')
+  lines.push('var responseBody = await response.Content.ReadAsStringAsync();')
+  lines.push('Console.WriteLine((int)response.StatusCode);')
+  lines.push('Console.WriteLine(responseBody);')
+
+  return lines.join('\n')
+}
+
+export function buildHttpieSnippet(tab: RequestTab): string {
+  const url = buildUrlWithAuth(tab.url, tab.params, tab.auth)
+  const headers = buildHeaders(tab.headers, tab.auth, tab.body.type)
+  const body = buildBody(tab)
+
+  const parts: string[] = ['http']
+  if (tab.method !== 'GET') parts.push(tab.method)
+  parts.push(quoteShell(url))
+
+  for (const [k, v] of Object.entries(headers)) {
+    parts.push(`${k}:${JSON.stringify(v)}`)
+  }
+
+  if (body !== undefined) {
+    // HTTPie uses @file or inline JSON/form
+    parts.push(`<<<${quoteShell(body)}`)
+  }
+
+  return parts.join(' \\\n  ')
 }
 
 export function formatSize(bytes: number): string {

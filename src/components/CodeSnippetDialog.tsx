@@ -5,6 +5,13 @@ import {
   buildWgetCommand,
   buildPythonSnippet,
   buildJavaScriptSnippet,
+  buildGoSnippet,
+  buildRubySnippet,
+  buildPhpSnippet,
+  buildRustSnippet,
+  buildJavaSnippet,
+  buildCsharpSnippet,
+  buildHttpieSnippet,
 } from '../utils/http'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { ScrollArea } from './ui/scroll-area'
@@ -12,13 +19,22 @@ import { Button } from './ui/button'
 import { Check, Copy } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-type Lang = 'curl' | 'wget' | 'python' | 'javascript'
+type Lang = 'curl' | 'wget' | 'httpie' | 'python' | 'javascript' | 'go' | 'ruby' | 'php' | 'rust' | 'java' | 'csharp'
 
-const LANGS: { id: Lang; label: string }[] = [
-  { id: 'curl', label: 'cURL' },
-  { id: 'wget', label: 'wget' },
-  { id: 'python', label: 'Python' },
-  { id: 'javascript', label: 'JavaScript' },
+interface LangDef { id: Lang; label: string; group: string }
+
+const LANGS: LangDef[] = [
+  { id: 'curl', label: 'cURL', group: 'Shell' },
+  { id: 'wget', label: 'wget', group: 'Shell' },
+  { id: 'httpie', label: 'HTTPie', group: 'Shell' },
+  { id: 'javascript', label: 'JavaScript', group: 'Languages' },
+  { id: 'python', label: 'Python', group: 'Languages' },
+  { id: 'go', label: 'Go', group: 'Languages' },
+  { id: 'rust', label: 'Rust', group: 'Languages' },
+  { id: 'ruby', label: 'Ruby', group: 'Languages' },
+  { id: 'php', label: 'PHP', group: 'Languages' },
+  { id: 'java', label: 'Java', group: 'Languages' },
+  { id: 'csharp', label: 'C#', group: 'Languages' },
 ]
 
 interface Props {
@@ -34,8 +50,15 @@ export function CodeSnippetDialog({ tab, open, onClose }: Props) {
   const snippets: Record<Lang, string> = {
     curl: buildCurlCommand(tab),
     wget: buildWgetCommand(tab),
+    httpie: buildHttpieSnippet(tab),
     python: buildPythonSnippet(tab),
     javascript: buildJavaScriptSnippet(tab),
+    go: buildGoSnippet(tab),
+    ruby: buildRubySnippet(tab),
+    php: buildPhpSnippet(tab),
+    rust: buildRustSnippet(tab),
+    java: buildJavaSnippet(tab),
+    csharp: buildCsharpSnippet(tab),
   }
 
   const handleCopy = () => {
@@ -51,21 +74,26 @@ export function CodeSnippetDialog({ tab, open, onClose }: Props) {
           <DialogTitle>Code Snippet</DialogTitle>
         </DialogHeader>
 
-        {/* Language tab strip */}
-        <div className="flex gap-0.5 px-5 border-b border-border">
-          {LANGS.map((l) => (
-            <button
-              key={l.id}
-              onClick={() => { setLang(l.id); setCopied(false) }}
-              className={cn(
-                'px-3 py-2 text-xs font-medium transition-colors border-b-2 -mb-px',
-                lang === l.id
-                  ? 'border-primary text-foreground'
-                  : 'border-transparent text-muted-foreground hover:text-foreground'
-              )}
-            >
-              {l.label}
-            </button>
+        {/* Language tab strip — grouped */}
+        <div className="px-4 border-b border-border overflow-x-auto">
+          {['Shell', 'Languages'].map((group) => (
+            <div key={group} className="inline-flex items-center gap-0.5 mr-3">
+              <span className="text-[9px] uppercase tracking-widest text-muted-foreground/40 mr-1 select-none">{group}</span>
+              {LANGS.filter((l) => l.group === group).map((l) => (
+                <button
+                  key={l.id}
+                  onClick={() => { setLang(l.id); setCopied(false) }}
+                  className={cn(
+                    'px-2.5 py-2 text-xs font-medium transition-colors border-b-2 -mb-px whitespace-nowrap',
+                    lang === l.id
+                      ? 'border-primary text-foreground'
+                      : 'border-transparent text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  {l.label}
+                </button>
+              ))}
+            </div>
           ))}
         </div>
 

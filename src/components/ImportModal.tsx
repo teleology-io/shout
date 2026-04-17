@@ -2,6 +2,8 @@ import { useState, useRef } from 'react'
 import { useStore } from '../store/useStore'
 import type { Collection } from '../types'
 import { parseOpenApiText, parseOpenApiUrl, parseOpenApiFile } from '../utils/openapi'
+import { importPostman, looksLikePostman } from '../utils/importPostman'
+import { importInsomnia, looksLikeInsomnia } from '../utils/importInsomnia'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from './ui/dialog'
@@ -17,12 +19,46 @@ interface Props {
   onClose: () => void
 }
 
+type FormatHint = 'auto' | 'openapi' | 'postman' | 'insomnia'
+
+function detectFormat(text: string): FormatHint {
+  try {
+    const json = JSON.parse(text)
+    if (looksLikePostman(json)) return 'postman'
+    if (looksLikeInsomnia(json)) return 'insomnia'
+  } catch {
+    // not JSON — try YAML OpenAPI detection below
+  }
+  if (text.includes('openapi:') || text.includes('"openapi"') || text.includes('swagger:')) return 'openapi'
+  return 'auto'
+}
+
+async function parseText(text: string, hint: FormatHint): Promise<Collection> {
+  const effective = hint === 'auto' ? detectFormat(text) : hint
+  if (effective === 'postman') return importPostman(JSON.parse(text))
+  if (effective === 'insomnia') return importInsomnia(JSON.parse(text))
+  return parseOpenApiText(text)
+}
+
+async function parseFile(file: File, hint: FormatHint): Promise<Collection> {
+  if (hint === 'auto') {
+    const text = await file.text()
+    const fmt = detectFormat(text)
+    if (fmt === 'postman') return importPostman(JSON.parse(text))
+    if (fmt === 'insomnia') return importInsomnia(JSON.parse(text))
+    return parseOpenApiFile(file)
+  }
+  const text = await file.text()
+  return parseText(text, hint)
+}
+
 export function ImportModal({ onClose }: Props) {
   const [url, setUrl] = useState('')
   const [pasteText, setPasteText] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [mode, setMode] = useState('file')
+  const [format, setFormat] = useState<FormatHint>('auto')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
 
@@ -32,14 +68,15 @@ export function ImportModal({ onClose }: Props) {
     try {
       let collection: Collection
       if (mode === 'file') {
-        if (!selectedFile) { setError('Please select a file'); return }
-        collection = await parseOpenApiFile(selectedFile)
+        if (!selectedFile) { setError('Please select a file'); setLoading(false); return }
+        collection = await parseFile(selectedFile, format)
       } else if (mode === 'url') {
-        if (!url.trim()) { setError('Please enter a URL'); return }
+        if (!url.trim()) { setError('Please enter a URL'); setLoading(false); return }
+        // URL mode: fetch text first, then detect
         collection = await parseOpenApiUrl(url.trim())
       } else {
-        if (!pasteText.trim()) { setError('Please paste your spec'); return }
-        collection = await parseOpenApiText(pasteText.trim())
+        if (!pasteText.trim()) { setError('Please paste your collection or spec'); setLoading(false); return }
+        collection = await parseText(pasteText.trim(), format)
       }
 
       const { collections } = useStore.getState()
@@ -61,11 +98,32 @@ export function ImportModal({ onClose }: Props) {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Upload className="h-4 w-4 text-primary" />
-            Import OpenAPI Spec
+            Import Collection
           </DialogTitle>
         </DialogHeader>
 
         <div className="px-6">
+          {/* Format selector */}
+          <div className="mb-3 flex items-center gap-2">
+            <Label className="text-xs text-muted-foreground shrink-0">Format</Label>
+            <div className="flex gap-1">
+              {(['auto', 'openapi', 'postman', 'insomnia'] as FormatHint[]).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setFormat(f)}
+                  className={cn(
+                    'px-2 py-0.5 rounded text-[11px] font-medium transition-colors border',
+                    format === f
+                      ? 'bg-primary text-primary-foreground border-primary'
+                      : 'bg-transparent text-muted-foreground border-border hover:border-primary/40 hover:text-foreground'
+                  )}
+                >
+                  {f === 'auto' ? 'Auto-detect' : f === 'openapi' ? 'OpenAPI' : f === 'postman' ? 'Postman' : 'Insomnia'}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <Tabs value={mode} onValueChange={setMode}>
             <TabsList className="w-full border-b border-border">
               <TabsTrigger value="file" className="flex-1 text-xs gap-1.5">
@@ -103,7 +161,7 @@ export function ImportModal({ onClose }: Props) {
                 ) : (
                   <>
                     <p className="text-sm font-medium text-foreground">Click to select a file</p>
-                    <p className="text-xs text-muted-foreground mt-1">Supports .yml, .yaml, .json</p>
+                    <p className="text-xs text-muted-foreground mt-1">OpenAPI (.yml/.yaml/.json), Postman (.json), Insomnia (.json)</p>
                   </>
                 )}
               </div>
@@ -122,11 +180,11 @@ export function ImportModal({ onClose }: Props) {
             </TabsContent>
 
             <TabsContent value="paste" className="mt-4 space-y-2">
-              <Label>Paste OpenAPI spec (YAML or JSON)</Label>
+              <Label>Paste collection (OpenAPI, Postman, or Insomnia JSON)</Label>
               <Textarea
                 value={pasteText}
-                onChange={(e) => setPasteText(e.target.value)}
-                placeholder={'openapi: 3.0.0\ninfo:\n  title: My API\n  version: 1.0.0\npaths: {}'}
+                onChange={(e) => { setPasteText(e.target.value); setError(null) }}
+                placeholder={'Paste OpenAPI YAML/JSON, Postman v2.1 JSON, or Insomnia v4 export JSON'}
                 rows={10}
                 className="font-mono text-xs resize-none"
               />

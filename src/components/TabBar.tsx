@@ -2,12 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store/useStore'
 import { Button } from './ui/button'
 import { ScrollArea, ScrollBar } from './ui/scroll-area'
-import { Menu, Plus, X } from 'lucide-react'
+import { Plus, X, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
-
-interface Props {
-  onMenuClick: () => void
-}
 
 interface ContextMenu {
   tabId: string
@@ -15,7 +11,7 @@ interface ContextMenu {
   y: number
 }
 
-export function TabBar({ onMenuClick }: Props) {
+export function TabBar() {
   const { tabs, activeTabId, closeTab, closeOtherTabs, closeTabsToRight, closeAllTabs, setActiveTab, openTab } = useStore()
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -41,16 +37,16 @@ export function TabBar({ onMenuClick }: Props) {
   const hasTabsToRight = ctxTabIndex >= 0 && ctxTabIndex < tabs.length - 1
 
   return (
-    <div className="flex items-center border-b border-border bg-background shrink-0 h-10">
-      {/* Mobile hamburger */}
+    <div className="flex items-center bg-background flex-1 min-w-0 h-10">
+      {/* Global search */}
       <Button
         variant="ghost"
         size="icon"
-        className="md:hidden shrink-0 ml-1 h-7 w-7"
-        onClick={onMenuClick}
-        aria-label="Open sidebar"
+        className="shrink-0 ml-1 h-7 w-7 text-muted-foreground"
+        onClick={() => window.dispatchEvent(new CustomEvent('shout:open-palette'))}
+        aria-label="Search (⌘K)"
       >
-        <Menu className="h-4 w-4" />
+        <Search className="h-4 w-4" />
       </Button>
 
       {/* Scrollable tabs */}

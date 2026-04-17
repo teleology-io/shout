@@ -4,6 +4,7 @@ import type { Collection, CollectionGroup, SavedRequest } from '../types'
 import { METHOD_COLORS } from '../types'
 import { ImportModal } from './ImportModal'
 import { EnvironmentModal } from './EnvironmentModal'
+import { CollectionRunner } from './CollectionRunner'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
@@ -12,8 +13,11 @@ import { Separator } from './ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 import {
   Plus, Upload, ChevronRight, Trash2, FolderOpen, Check,
-  Folder, FolderPlus, Pencil, MoreHorizontal, X, FlaskConical, Search,
+  Folder, FolderPlus, Pencil, MoreHorizontal, X, FlaskConical, Search, Play, Download,
+  Settings,
 } from 'lucide-react'
+import { IconDots } from '@tabler/icons-react'
+import { exportPostman, exportInsomnia, exportNative, downloadJson } from '../utils/exportCollection'
 import { cn } from '@/lib/utils'
 
 // ── Drag state (pointer-event based, avoids WKWebView DnD limitations) ────────
@@ -34,16 +38,9 @@ interface DragState {
 const ATTR_KEY = 'data-drop-key'   // "group:<id>" | "root:<colId>"
 const ATTR_COL = 'data-drop-col'   // collection id
 
-// ── Fuzzy match ───────────────────────────────────────────────────────────────
+import { fuzzy } from '../utils/fuzzy'
 
-function fuzzy(query: string, target: string): boolean {
-  const t = target.toLowerCase()
-  let qi = 0
-  for (let i = 0; i < t.length && qi < query.length; i++) {
-    if (t[i] === query[qi]) qi++
-  }
-  return qi === query.length
-}
+// (fuzzy imported from utils/fuzzy.ts)
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
@@ -54,6 +51,8 @@ interface Props {
 export function Sidebar({ onNavigate }: Props) {
   const { collections, savedRequests, tabs, activeTabId, openTab, addCollection, moveRequestsToGroup, moveRequestsToRoot, moveSavedRequestsToCollection, deleteRootRequest, openSavedRequest } = useStore()
   const [showImport, setShowImport] = useState(false)
+  const [envCollection, setEnvCollection] = useState<import('../types').Collection | null>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [newColName, setNewColName] = useState('')
   const [addingCol, setAddingCol] = useState(false)
@@ -215,6 +214,21 @@ export function Sidebar({ onNavigate }: Props) {
 
   const isDragging = draggingIds.size > 0
 
+  // Listen for global events from command palette / keyboard shortcuts
+  useEffect(() => {
+    const handler = () => setShowImport(true)
+    window.addEventListener('shout:open-import', handler)
+    return () => window.removeEventListener('shout:open-import', handler)
+  }, [])
+
+  useEffect(() => {
+    const handler = () => {
+      if (collections.length > 0) setEnvCollection(collections[0])
+    }
+    window.addEventListener('shout:open-environments', handler)
+    return () => window.removeEventListener('shout:open-environments', handler)
+  }, [collections])
+
   const deferredSearch = useDeferredValue(search)
   const q = deferredSearch.trim().toLowerCase()
   const filterActive = q.length > 0
@@ -270,7 +284,7 @@ export function Sidebar({ onNavigate }: Props) {
                 <Upload className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Import OpenAPI</TooltipContent>
+            <TooltipContent>Import</TooltipContent>
           </Tooltip>
         </div>
       </div>
@@ -280,6 +294,7 @@ export function Sidebar({ onNavigate }: Props) {
         <div className="relative flex-1">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground/50 pointer-events-none" />
           <Input
+            ref={searchInputRef}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search…"
@@ -349,7 +364,7 @@ export function Sidebar({ onNavigate }: Props) {
                 onClick={() => setShowImport(true)}
                 className="text-primary/70 hover:text-primary text-xs mt-1 underline-offset-2 hover:underline"
               >
-                Import an OpenAPI spec
+                Import a collection
               </button>
             </div>
           )}
@@ -456,19 +471,6 @@ export function Sidebar({ onNavigate }: Props) {
         )}
       </ScrollArea>
 
-      {/* Footer */}
-      <div className="border-t border-border px-2 py-2 shrink-0">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="w-full gap-2 text-muted-foreground justify-start text-xs"
-          onClick={() => setShowImport(true)}
-        >
-          <Upload className="h-3.5 w-3.5" />
-          Import OpenAPI
-        </Button>
-      </div>
-
       {/* Drag ghost — follows cursor */}
       {isDragging && dragPos && (
         <div
@@ -479,7 +481,38 @@ export function Sidebar({ onNavigate }: Props) {
         </div>
       )}
 
+      {/* Footer: shortcuts + settings */}
+      <div className="border-t border-border px-2 py-1.5 flex gap-0.5 shrink-0">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-muted-foreground"
+              onClick={() => window.dispatchEvent(new CustomEvent('shout:open-shortcuts'))}
+            >
+              <span className="text-[10px] font-mono">?</span>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Keyboard Shortcuts</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-muted-foreground ml-auto"
+              onClick={() => window.dispatchEvent(new CustomEvent('shout:open-settings'))}
+            >
+              <Settings className="h-3.5 w-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Settings</TooltipContent>
+        </Tooltip>
+      </div>
+
       {showImport && <ImportModal onClose={() => setShowImport(false)} />}
+      {envCollection && <EnvironmentModal collection={envCollection} onClose={() => setEnvCollection(null)} />}
     </div>
   )
 }
@@ -517,6 +550,20 @@ function CollectionItem(props: CollectionItemProps) {
   const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null)
   const [renamingGroupName, setRenamingGroupName] = useState('')
   const [showEnvModal, setShowEnvModal] = useState(false)
+  const [showRunner, setShowRunner] = useState(false)
+  const [showMenu, setShowMenu] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!showMenu) return
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setShowMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showMenu])
 
   const groups = collection.groups ?? []
   const activeEnv = (collection.environments ?? []).find((e) => e.id === collection.activeEnvironmentId) ?? null
@@ -548,49 +595,92 @@ function CollectionItem(props: CollectionItemProps) {
         <ChevronRight
           className={cn('h-3.5 w-3.5 text-muted-foreground/50 shrink-0 transition-transform duration-150', effectiveExpanded && 'rotate-90')}
         />
-        <span className="text-xs font-medium text-foreground flex-1 truncate">{collection.name}</span>
+        <span className="text-xs font-medium text-foreground truncate max-w-[15ch]">{collection.name}</span>
+        <span className="flex-1" />
         <span className="text-[10px] text-muted-foreground/40 mr-0.5">{totalCount}</span>
 
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={(e) => { e.stopPropagation(); setShowEnvModal(true) }}
-              className={cn(
-                'p-0.5 rounded transition-opacity hover:text-foreground',
-                activeEnv ? 'text-primary opacity-100' : 'opacity-0 group-hover:opacity-100 text-muted-foreground'
-              )}
-              aria-label="Environments"
-            >
-              <FlaskConical className="h-3 w-3" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>{activeEnv ? `Env: ${activeEnv.name}` : 'Environments'}</TooltipContent>
-        </Tooltip>
+        {/* Active env dot */}
+        {activeEnv && (
+          <span className="h-1.5 w-1.5 rounded-full bg-primary shrink-0" title={`Env: ${activeEnv.name}`} />
+        )}
 
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={(e) => { e.stopPropagation(); setAddingGroup(true); if (!expanded) onToggle() }}
-              className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-opacity hover:text-foreground text-muted-foreground"
-              aria-label="Add group"
-            >
-              <FolderPlus className="h-3 w-3" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>New group</TooltipContent>
-        </Tooltip>
+        {/* Actions menu */}
+        <div className="relative" onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={() => setShowMenu((v) => !v)}
+            className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-opacity hover:text-foreground text-muted-foreground"
+            aria-label="Collection actions"
+          >
+            <IconDots size={13} />
+          </button>
 
-        <button
-          onClick={(e) => { e.stopPropagation(); deleteCollection(collection.id) }}
-          className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-opacity hover:text-destructive text-muted-foreground"
-          aria-label="Delete collection"
-        >
-          <Trash2 className="h-3 w-3" />
-        </button>
+          {showMenu && (
+            <div
+              ref={menuRef}
+              className="absolute right-0 top-full z-50 min-w-[180px] bg-popover border border-border rounded-md shadow-lg py-1 text-xs"
+            >
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-accent transition-colors flex items-center gap-2"
+                onClick={() => { setShowEnvModal(true); setShowMenu(false) }}
+              >
+                <FlaskConical className="h-3.5 w-3.5 text-muted-foreground" />
+                {activeEnv ? `Env: ${activeEnv.name}` : 'Environments'}
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-accent transition-colors flex items-center gap-2"
+                onClick={() => { setShowRunner(true); setShowMenu(false) }}
+              >
+                <Play className="h-3.5 w-3.5 text-muted-foreground" />
+                Run collection
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-accent transition-colors flex items-center gap-2"
+                onClick={() => { setAddingGroup(true); if (!expanded) onToggle(); setShowMenu(false) }}
+              >
+                <FolderPlus className="h-3.5 w-3.5 text-muted-foreground" />
+                New group
+              </button>
+              <div className="border-t border-border/50 my-1" />
+              <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground/50 font-semibold">Export as</div>
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-accent transition-colors flex items-center gap-2"
+                onClick={() => { downloadJson(exportPostman(collection), `${collection.name}-postman.json`); setShowMenu(false) }}
+              >
+                <Download className="h-3.5 w-3.5 text-muted-foreground" />
+                Postman v2.1
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-accent transition-colors flex items-center gap-2"
+                onClick={() => { downloadJson(exportInsomnia(collection), `${collection.name}-insomnia.json`); setShowMenu(false) }}
+              >
+                <Download className="h-3.5 w-3.5 text-muted-foreground" />
+                Insomnia v4
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-accent transition-colors flex items-center gap-2"
+                onClick={() => { downloadJson(exportNative(collection), `${collection.name}-shout.json`); setShowMenu(false) }}
+              >
+                <Download className="h-3.5 w-3.5 text-muted-foreground" />
+                Shout JSON
+              </button>
+              <div className="border-t border-border/50 my-1" />
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-accent transition-colors flex items-center gap-2 text-destructive"
+                onClick={() => { deleteCollection(collection.id); setShowMenu(false) }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete collection
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {showEnvModal && (
         <EnvironmentModal collection={collection} onClose={() => setShowEnvModal(false)} />
+      )}
+      {showRunner && (
+        <CollectionRunner collection={collection} open={showRunner} onClose={() => setShowRunner(false)} />
       )}
 
       {/* Expanded content */}
