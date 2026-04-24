@@ -481,8 +481,8 @@ export function Sidebar({ onNavigate }: Props) {
         </div>
       )}
 
-      {/* Footer: shortcuts + settings */}
-      <div className="border-t border-border px-2 py-1.5 flex gap-0.5 shrink-0">
+      {/* Footer: shortcuts + version + settings */}
+      <div className="border-t border-border px-2 py-1.5 flex items-center gap-0.5 shrink-0">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -496,12 +496,15 @@ export function Sidebar({ onNavigate }: Props) {
           </TooltipTrigger>
           <TooltipContent>Keyboard Shortcuts</TooltipContent>
         </Tooltip>
+        <span className="flex-1 text-center text-[10px] text-muted-foreground/40 font-mono select-none">
+          v{__APP_VERSION__}
+        </span>
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               variant="ghost"
               size="icon"
-              className="h-7 w-7 text-muted-foreground ml-auto"
+              className="h-7 w-7 text-muted-foreground"
               onClick={() => window.dispatchEvent(new CustomEvent('shout:open-settings'))}
             >
               <Settings className="h-3.5 w-3.5" />
